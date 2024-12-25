@@ -17,9 +17,7 @@
 
     <div v-if="!shelves.length && !isLoading" class="absolute top-0 left-0 w-full h-full flex items-center justify-center">
       <div>
-        <p class="mb-4 text-center text-xl">
-          {{ $strings.MessageBookshelfEmpty }}
-        </p>
+        <p class="mb-4 text-center text-xl">No Friends Yet</p>
         <div class="w-full" v-if="!user">
           <div class="flex justify-center items-center mb-3">
             <span class="material-icons text-error text-lg">cloud_off</span>
@@ -27,7 +25,7 @@
           </div>
         </div>
         <div class="flex justify-center">
-          <ui-btn v-if="!user" small @click="$router.push('/connect')" class="w-32">{{ $strings.ButtonConnect }}</ui-btn>
+          <ui-btn v-if="!user" small @click="$router.push('/connect')" class="w-32">Add Friend</ui-btn>
         </div>
       </div>
     </div>

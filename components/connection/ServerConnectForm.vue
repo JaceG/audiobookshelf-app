@@ -22,10 +22,12 @@
           <div v-if="serverConnectionConfigs.length" class="flex items-center mb-4" @click="showServerList">
             <span class="material-icons text-fg-muted">arrow_back</span>
           </div>
-          <h2 class="text-lg leading-7 mb-2">{{ $strings.LabelServerAddress }}</h2>
-          <ui-text-input v-model="serverConfig.address" :disabled="processing || !networkConnected || !!serverConfig.id" placeholder="http://55.55.55.55:13378" type="url" class="w-full h-10" />
+          <h2 class="text-lg leading-7 mb-2">Enter Friend's Name</h2>
+          <ui-text-input v-model="friendName" :disabled="processing || !networkConnected || !!serverConfig.id" placeholder="Enter a friend's name to start" class="w-full h-10" />
           <div class="flex justify-end items-center mt-6">
-            <ui-btn :disabled="processing || !networkConnected" type="submit" :padding-x="3" class="h-10">{{ networkConnected ? $strings.ButtonSubmit : $strings.MessageNoNetworkConnection }}</ui-btn>
+            <ui-btn :disabled="processing || !networkConnected" type="submit" :padding-x="3" class="h-10">
+              {{ networkConnected ? 'Add Friend' : $strings.MessageNoNetworkConnection }}
+            </ui-btn>
           </div>
         </form>
         <!-- username/password and auth methods -->
@@ -83,6 +85,7 @@
 import { Browser } from '@capacitor/browser'
 import { CapacitorHttp } from '@capacitor/core'
 import { Dialog } from '@capacitor/dialog'
+import { Capacitor } from '@capacitor/core'
 
 // TODO: when backend ready. See validateLoginFormResponse()
 //const requiredServerVersion = '2.5.0'
@@ -110,7 +113,8 @@ export default {
         challenge: null,
         buttonText: 'Login with OpenID',
         enforceHTTPs: true // RFC 6749, Section 10.9 requires https
-      }
+      },
+      friendName: ''
     }
   },
   computed: {
@@ -121,6 +125,7 @@ export default {
       return this.deviceData.deviceSettings || {}
     },
     networkConnected() {
+      console.log('[ServerConnectForm] Network status:', this.$store.state.networkConnected)
       return this.$store.state.networkConnected
     },
     serverConnectionConfigs() {
@@ -602,35 +607,112 @@ export default {
     },
     async submit() {
       if (!this.networkConnected) return
-      if (!this.serverConfig.address) return
 
-      const initialAddress = this.serverConfig.address
-      // Did the user specify a protocol?
-      const protocolProvided = initialAddress.startsWith('http://') || initialAddress.startsWith('https://')
-      // Add https:// if not provided
-      this.serverConfig.address = this.prependProtocolIfNeeded(initialAddress)
+      console.log('[ServerConnectForm] Attempting connection with friend name:', this.friendName)
 
-      this.processing = true
-      this.error = null
-      this.authMethods = []
+      // Map friend name to server address
+      if (this.friendName.toLowerCase() === 'jace') {
+        const serverAddresses = ['http://127.0.0.1:13378', 'http://localhost:13378']
 
-      try {
-        // Try the server URL. If it fails and the protocol was not provided, try with http instead of https
-        const statusData = await this.tryServerUrl(this.serverConfig.address, !protocolProvided)
-        if (this.validateLoginFormResponse(statusData, this.serverConfig.address, protocolProvided)) {
-          this.showAuth = true
-          this.authMethods = statusData.data.authMethods || []
-          this.oauth.buttonText = statusData.data.authFormData?.authOpenIDButtonText || 'Login with OpenID'
-          this.serverConfig.version = statusData.data.serverVersion
-
-          if (statusData.data.authFormData?.authOpenIDAutoLaunch) {
-            this.clickLoginWithOpenId()
+        for (const address of serverAddresses) {
+          console.log('[ServerConnectForm] Trying server address:', address)
+          this.serverConfig.address = address
+          const isValid = await this.validateServer()
+          if (isValid) {
+            console.log('[ServerConnectForm] Successfully connected to:', address)
+            return true
           }
         }
-      } catch (error) {
-        this.handleLoginFormError(error)
-      } finally {
+
+        console.error('[ServerConnectForm] Failed to connect to any address')
+        this.error = 'Could not connect to server. Please check if the server is running.'
+        return false
+      }
+
+      this.error = null
+      this.processing = true
+
+      console.log('[ServerConnectForm] Starting server validation...')
+      const serverRes = await this.validateServer()
+      console.log('[ServerConnectForm] Server validation result:', serverRes)
+
+      if (!serverRes) {
+        console.error('[ServerConnectForm] Server validation failed')
         this.processing = false
+        return
+      }
+
+      this.showAuth = true
+      this.processing = false
+    },
+    async validateServer() {
+      console.log('[ServerConnectForm] Starting server validation for:', this.serverConfig.address)
+
+      try {
+        console.log('[ServerConnectForm] Attempting to connect...')
+        const response = await CapacitorHttp.get({
+          url: `${this.serverConfig.address}/api/ping`,
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          connectTimeout: 5000
+        })
+
+        console.log('[ServerConnectForm] Server response:', {
+          status: response.status,
+          data: response.data
+        })
+
+        // Consider both 200 and 401 as successful connections
+        if (response.status !== 200 && response.status !== 401) {
+          throw new Error(`Server returned ${response.status}`)
+        }
+
+        console.log('[ServerConnectForm] Successfully connected to:', this.serverConfig.address)
+
+        // Save the server config and trigger navigation
+        await this.saveServerConfig()
+
+        // Show the built-in auth form instead of navigating
+        this.showAuth = true
+
+        return true
+      } catch (error) {
+        if (error.message?.includes('timeout')) {
+          console.error('[ServerConnectForm] Connection timeout')
+          this.error = 'Connection timeout - server not responding'
+        } else {
+          console.error('[ServerConnectForm] Network error:', error.message)
+          this.error = `Network error: ${error.message}`
+        }
+        return false
+      }
+    },
+    async saveServerConfig() {
+      console.log('[ServerConnectForm] Saving server configuration')
+      try {
+        const config = {
+          id: Date.now().toString(),
+          address: this.serverConfig.address,
+          name: `${this.serverConfig.address} (${this.serverConfig.name || ''})`,
+          token: '', // Will be set after successful login
+          username: '',
+          userId: '',
+          index: 1
+        }
+
+        // Save using AbsDatabase plugin
+        await this.$db.setCurrentServerConnectionConfig(config)
+        console.log('[ServerConnectForm] Server configuration saved')
+
+        // Update local serverConfig to match saved config
+        this.serverConfig = config
+
+        // Show the built-in auth form instead of navigating
+        this.showAuth = true
+      } catch (error) {
+        console.error('[ServerConnectForm] Error saving config:', error)
+        this.error = 'Failed to save server configuration'
       }
     },
     /** Validates the login form response from the server.
